@@ -1,7 +1,7 @@
 # Basic PR Review Generation
 # Automatically generates AI-powered reviews for new pull requests
 
-name: Auto-review PRs
+name: Augment - Auto-review PRs
 on:
   pull_request:
     types: [opened]
