@@ -1773,11 +1773,9 @@ mod tests {
     use num_bigint::{BigInt, Sign};
     use serde::Serialize;
     use serde_bytes::{ByteArray, Bytes};
-    use serial_test::serial;
     use std::{
         collections::{BTreeMap, HashMap},
         marker::PhantomData,
-        sync::atomic::Ordering,
     };
     use uuid::Uuid;
 
@@ -2418,7 +2416,6 @@ mod tests {
     }
 
     #[test]
-    #[serial(serde_is_human_readable)]
     fn test_serialize_bigdecimal() -> TestResult {
         let schema = Schema::parse_str(
             r#"{
@@ -2427,7 +2424,6 @@ mod tests {
         }"#,
         )?;
 
-        crate::util::SERDE_HUMAN_READABLE.store(true, Ordering::Release);
         let mut buffer: Vec<u8> = Vec::new();
         let names = HashMap::new();
         let mut serializer = SchemaAwareWriteSerializer::new(&mut buffer, &schema, &names, None);
@@ -2441,7 +2437,6 @@ mod tests {
     }
 
     #[test]
-    #[serial(serde_is_human_readable)]
     fn test_serialize_uuid() -> TestResult {
         let schema = Schema::parse_str(
             r#"{
@@ -2450,7 +2445,7 @@ mod tests {
         }"#,
         )?;
 
-        crate::util::SERDE_HUMAN_READABLE.store(true, Ordering::Release);
+        assert!(!crate::util::is_human_readable());
         let mut buffer: Vec<u8> = Vec::new();
         let names = HashMap::new();
         let mut serializer = SchemaAwareWriteSerializer::new(&mut buffer, &schema, &names, None);
@@ -2475,9 +2470,7 @@ mod tests {
         assert_eq!(
             buffer.as_slice(),
             &[
-                72, b'8', b'c', b'2', b'8', b'd', b'a', b'8', b'1', b'-', b'2', b'3', b'8', b'c',
-                b'-', b'4', b'3', b'2', b'6', b'-', b'b', b'd', b'd', b'd', b'-', b'4', b'e', b'3',
-                b'd', b'0', b'0', b'c', b'c', b'5', b'0', b'9', b'9'
+                32, 140, 40, 218, 129, 35, 140, 67, 38, 189, 221, 78, 61, 0, 204, 80, 153
             ]
         );
 
@@ -2718,7 +2711,6 @@ mod tests {
     }
 
     #[test]
-    #[serial(serde_is_human_readable)] // for BigDecimal and Uuid
     fn test_serialize_recursive_record() -> TestResult {
         let schema = Schema::parse_str(
             r#"{
@@ -2745,7 +2737,7 @@ mod tests {
             inner_record: Option<Box<TestRecord>>,
         }
 
-        crate::util::SERDE_HUMAN_READABLE.store(true, Ordering::Release);
+        assert!(!crate::util::is_human_readable());
         let mut buffer: Vec<u8> = Vec::new();
         let rs = ResolvedSchema::try_from(&schema)?;
         let mut serializer =
@@ -2769,12 +2761,10 @@ mod tests {
         assert_eq!(
             buffer.as_slice(),
             &[
-                8, 116, 101, 115, 116, 20, 10, 6, 0, 195, 104, 4, 72, 56, 99, 50, 56, 100, 97, 56,
-                49, 45, 50, 51, 56, 99, 45, 52, 51, 50, 54, 45, 98, 100, 100, 100, 45, 52, 101, 51,
-                100, 48, 48, 99, 99, 53, 48, 57, 56, 2, 20, 105, 110, 110, 101, 114, 95, 116, 101,
-                115, 116, 200, 1, 8, 4, 78, 70, 4, 72, 56, 99, 50, 56, 100, 97, 56, 49, 45, 50, 51,
-                56, 99, 45, 52, 51, 50, 54, 45, 98, 100, 100, 100, 45, 52, 101, 51, 100, 48, 48,
-                99, 99, 53, 48, 57, 57, 0
+                8, 116, 101, 115, 116, 20, 10, 6, 0, 195, 104, 4, 32, 140, 40, 218, 129, 35, 140,
+                67, 38, 189, 221, 78, 61, 0, 204, 80, 152, 2, 20, 105, 110, 110, 101, 114, 95, 116,
+                101, 115, 116, 200, 1, 8, 4, 78, 70, 4, 32, 140, 40, 218, 129, 35, 140, 67, 38,
+                189, 221, 78, 61, 0, 204, 80, 153, 0
             ]
         );
 
