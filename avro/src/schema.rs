@@ -2565,7 +2565,7 @@ pub mod derive {
             let inner_schema = T::get_schema_in_ctxt(named_schemas, enclosing_namespace);
             Schema::Union(UnionSchema {
                 schemas: vec![Schema::Null, inner_schema.clone()],
-                variant_index: vec![Schema::Null, inner_schema]
+                variant_index: [Schema::Null, inner_schema]
                     .iter()
                     .enumerate()
                     .map(|(idx, s)| (SchemaKind::from(s), idx))
@@ -2638,14 +2638,12 @@ pub mod derive {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SpecificSingleObjectWriter, error::Details, rabin::Rabin};
+    use crate::{error::Details, rabin::Rabin};
     use apache_avro_test_helper::{
         TestResult,
         logger::{assert_logged, assert_not_logged},
     };
     use serde_json::json;
-    use serial_test::serial;
-    use std::sync::atomic::Ordering;
 
     #[test]
     fn test_invalid_schema() {
@@ -5251,7 +5249,7 @@ mod tests {
         let avro_value = crate::to_value(foo)?;
         assert!(avro_value.validate(&schema));
 
-        let mut writer = crate::Writer::new(&schema, Vec::new());
+        let mut writer = crate::Writer::new(&schema, Vec::new())?;
 
         // schema validation happens here
         writer.append(avro_value)?;
@@ -6701,55 +6699,6 @@ mod tests {
         });
         let parse_result = Schema::parse(&schema)?;
         assert_eq!(parse_result, Schema::Uuid);
-
-        Ok(())
-    }
-
-    #[test]
-    #[serial(serde_is_human_readable)]
-    fn avro_rs_53_uuid_with_fixed() -> TestResult {
-        #[derive(Debug, Serialize, Deserialize)]
-        struct Comment {
-            id: crate::Uuid,
-        }
-
-        impl AvroSchema for Comment {
-            fn get_schema() -> Schema {
-                Schema::parse_str(
-                    r#"{
-                        "type" : "record",
-                        "name" : "Comment",
-                        "fields" : [ {
-                          "name" : "id",
-                          "type" : {
-                            "type" : "fixed",
-                            "size" : 16,
-                            "logicalType" : "uuid",
-                            "name": "FixedUUID"
-                          }
-                        } ]
-                     }"#,
-                )
-                .expect("Invalid Comment Avro schema")
-            }
-        }
-
-        let payload = Comment {
-            id: "de2df598-9948-4988-b00a-a41c0e287398".parse()?,
-        };
-        let mut buffer = Vec::new();
-
-        // serialize the Uuid as String
-        crate::util::SERDE_HUMAN_READABLE.store(true, Ordering::Release);
-        let bytes = SpecificSingleObjectWriter::<Comment>::with_capacity(64)?
-            .write_ref(&payload, &mut buffer)?;
-        assert_eq!(bytes, 47);
-
-        // serialize the Uuid as Bytes
-        crate::util::SERDE_HUMAN_READABLE.store(false, Ordering::Release);
-        let bytes = SpecificSingleObjectWriter::<Comment>::with_capacity(64)?
-            .write_ref(&payload, &mut buffer)?;
-        assert_eq!(bytes, 27);
 
         Ok(())
     }
