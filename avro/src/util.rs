@@ -83,7 +83,7 @@ pub(crate) fn zig_i32<W: Write>(n: i32, buffer: W) -> AvroResult<usize> {
 }
 
 pub(crate) fn zig_i64<W: Write>(n: i64, writer: W) -> AvroResult<usize> {
-    encode_variable(((n << 1) ^ (n >> 63)) as u64, writer)
+    encode_variable(n, writer)
 }
 
 pub(crate) fn zag_i32<R: Read>(reader: &mut R) -> AvroResult<i32> {
@@ -100,7 +100,8 @@ pub(crate) fn zag_i64<R: Read>(reader: &mut R) -> AvroResult<i64> {
     })
 }
 
-fn encode_variable<W: Write>(mut z: u64, mut writer: W) -> AvroResult<usize> {
+fn encode_variable<W: Write>(n: i64, mut writer: W) -> AvroResult<usize> {
+    let mut z = (((n << 1) ^ (n >> 63)) as u64).to_le();
     let mut buffer = [0u8; 10];
     let mut i: usize = 0;
     loop {
