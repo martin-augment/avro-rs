@@ -33,14 +33,14 @@ version = "0.22.0"
 license = "Apache-2.0"
 repository = "https://github.com/apache/avro-rs"
 edition = "2024"
-rust-version = "1.85.0"
+rust-version = "1.86.0"
 keywords = ["avro", "data", "serialization"]
 categories = ["encoding"]
 documentation = "https://docs.rs/apache-avro"
 
 # dependencies used by more than one members
 [workspace.dependencies]
-log = { default-features = false, version = "0.4.28" }
+log = { default-features = false, version = "0.4.29" }
 serde = { default-features = false, version = "1.0.228", features = ["derive"] }
 serde_bytes = { default-features = false, version = "0.11.19", features = ["std"] }
 serde_json = { default-features = false, version = "1.0.145", features = ["std"] }
