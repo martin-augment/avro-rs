@@ -480,8 +480,8 @@ impl Value {
                     None
                 }
             }
-            (&Value::Fixed(n, _), &Schema::Uuid(UuidSchema::Fixed(_))) => {
-                if n != 16 {
+            (&Value::Fixed(n, _), Schema::Uuid(UuidSchema::Fixed(size, ..))) => {
+                if n != 16 || size.size != 16 {
                     Some(format!(
                         "The value's size ('{n}') must be exactly 16 to be a Uuid"
                     ))
