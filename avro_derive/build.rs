@@ -15,29 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use serde::Deserialize;
+//! Set the `nightly` cfg value on nightly toolchains.
+//!
+//! We would prefer to just do `#![rustversion::attr(nightly, feature(proc_macro_diagnostic)]`
+//! but that's currently not possible, see https://github.com/dtolnay/rustversion/issues/8
 
-#[test]
-fn avro_rs_219_failing_deserialization_due_to_bigdecimal_dependency() {
-    #[derive(Deserialize, PartialEq, Debug)]
-    struct S3 {
-        f1: Option<f64>,
-
-        #[serde(flatten)]
-        inner: Inner,
-    }
-
-    #[derive(Deserialize, PartialEq, Debug)]
-    struct Inner {
-        f2: f64,
-    }
-
-    let test = r#"{
-      "f1": 0.3,
-      "f2": 3.76
-    }"#;
-
-    let result = serde_json::from_str::<S3>(test);
-    println!("result : {result:#?}");
-    result.unwrap();
+#[rustversion::nightly]
+fn main() {
+    println!("cargo:rustc-cfg=nightly");
 }
+
+#[rustversion::not(nightly)]
+fn main() {}
