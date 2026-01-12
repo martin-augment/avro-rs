@@ -1897,10 +1897,10 @@ impl Parser {
     ) -> AvroResult<Schema> {
         let fields_opt = complex.get("fields");
 
-        if fields_opt.is_none() {
-            if let Some(seen) = self.get_already_seen_schema(complex, enclosing_namespace) {
-                return Ok(seen.clone());
-            }
+        if fields_opt.is_none()
+            && let Some(seen) = self.get_already_seen_schema(complex, enclosing_namespace)
+        {
+            return Ok(seen.clone());
         }
 
         let fully_qualified_name = Name::parse(complex, enclosing_namespace)?;
@@ -1959,7 +1959,7 @@ impl Parser {
         let mut custom_attributes: BTreeMap<String, Value> = BTreeMap::new();
         for (key, value) in complex {
             match key.as_str() {
-                "type" | "name" | "namespace" | "doc" | "aliases" => continue,
+                "type" | "name" | "namespace" | "doc" | "aliases" | "logicalType" => continue,
                 candidate if excluded.contains(&candidate) => continue,
                 _ => custom_attributes.insert(key.clone(), value.clone()),
             };
@@ -1976,10 +1976,10 @@ impl Parser {
     ) -> AvroResult<Schema> {
         let symbols_opt = complex.get("symbols");
 
-        if symbols_opt.is_none() {
-            if let Some(seen) = self.get_already_seen_schema(complex, enclosing_namespace) {
-                return Ok(seen.clone());
-            }
+        if symbols_opt.is_none()
+            && let Some(seen) = self.get_already_seen_schema(complex, enclosing_namespace)
+        {
+            return Ok(seen.clone());
         }
 
         let fully_qualified_name = Name::parse(complex, enclosing_namespace)?;
@@ -2119,10 +2119,10 @@ impl Parser {
         enclosing_namespace: &Namespace,
     ) -> AvroResult<Schema> {
         let size_opt = complex.get("size");
-        if size_opt.is_none() {
-            if let Some(seen) = self.get_already_seen_schema(complex, enclosing_namespace) {
-                return Ok(seen.clone());
-            }
+        if size_opt.is_none()
+            && let Some(seen) = self.get_already_seen_schema(complex, enclosing_namespace)
+        {
+            return Ok(seen.clone());
         }
 
         let doc = complex.get("doc").and_then(|v| match &v {
@@ -2483,11 +2483,11 @@ fn pcf_map(schema: &Map<String, Value>, defined_names: &mut HashSet<String>) -> 
         }
 
         // Fully qualify the name, if it isn't already ([FULLNAMES] rule).
-        if k == "name" {
-            if let Some(ref n) = name {
-                fields.push(("name", format!("{}:{}", pcf_string(k), pcf_string(n))));
-                continue;
-            }
+        if k == "name"
+            && let Some(ref n) = name
+        {
+            fields.push(("name", format!("{}:{}", pcf_string(k), pcf_string(n))));
+            continue;
         }
 
         // Strip off quotes surrounding "size" type, if they exist ([INTEGERS] rule).
@@ -6909,11 +6909,11 @@ mod tests {
                 doc: None,
                 size: 6,
                 default: None,
-                attributes: BTreeMap::from([("logicalType".to_string(), "uuid".into())]),
+                attributes: BTreeMap::new(),
             })
         );
         assert_logged(
-            r#"Ignoring uuid logical type for a Fixed schema because its size (6) is not 16! Schema: Fixed(FixedSchema { name: Name { name: "FixedUUID", namespace: None }, aliases: None, doc: None, size: 6, default: None, attributes: {"logicalType": String("uuid")} })"#,
+            r#"Ignoring uuid logical type for a Fixed schema because its size (6) is not 16! Schema: Fixed(FixedSchema { name: Name { name: "FixedUUID", namespace: None }, aliases: None, doc: None, size: 6, default: None, attributes: {} })"#,
         );
 
         Ok(())
@@ -7470,7 +7470,7 @@ mod tests {
     }
 
     #[test]
-    fn avro_rs_339_schema_ref_uuid() {
+    fn avro_rs_339_schema_ref_uuid() -> TestResult {
         let schema = Schema::parse_str(
             r#"{
             "name": "foo",
@@ -7491,14 +7491,15 @@ mod tests {
                 }
             ]
         }"#,
-        )
-        .unwrap();
-        let _resolved = ResolvedSchema::try_from(&schema).unwrap();
-        let _resolved_owned = ResolvedOwnedSchema::try_from(schema).unwrap();
+        )?;
+        let _resolved = ResolvedSchema::try_from(&schema)?;
+        let _resolved_owned = ResolvedOwnedSchema::try_from(schema)?;
+
+        Ok(())
     }
 
     #[test]
-    fn avro_rs_339_schema_ref_decimal() {
+    fn avro_rs_339_schema_ref_decimal() -> TestResult {
         let schema = Schema::parse_str(
             r#"{
             "name": "foo",
@@ -7521,10 +7522,11 @@ mod tests {
                 }
             ]
         }"#,
-        )
-        .unwrap();
-        let _resolved = ResolvedSchema::try_from(&schema).unwrap();
-        let _resolved_owned = ResolvedOwnedSchema::try_from(schema).unwrap();
+        )?;
+        let _resolved = ResolvedSchema::try_from(&schema)?;
+        let _resolved_owned = ResolvedOwnedSchema::try_from(schema)?;
+
+        Ok(())
     }
 
     #[test]
@@ -7548,6 +7550,74 @@ mod tests {
         let schema_json = serde_json::to_value(&schema)?;
 
         assert_eq!(&schema_json, &expected_schema_json);
+
+        Ok(())
+    }
+
+    #[test]
+    fn avro_rs_395_logical_type_written_once_for_duration() -> TestResult {
+        let schema = Schema::parse_str(
+            r#"{
+            "type": "fixed",
+            "logicalType": "duration",
+            "name": "Duration",
+            "size": 12
+        }"#,
+        )?;
+
+        let schema_json_str = serde_json::to_string(&schema)?;
+
+        assert_eq!(
+            schema_json_str.matches("logicalType").count(),
+            1,
+            "Expected serialized schema to contain only one logicalType key: {schema_json_str}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn avro_rs_395_logical_type_written_once_for_uuid_fixed() -> TestResult {
+        let schema = Schema::parse_str(
+            r#"{
+            "type": "fixed",
+            "logicalType": "uuid",
+            "name": "UUID",
+            "size": 16
+        }"#,
+        )?;
+
+        let schema_json_str = serde_json::to_string(&schema)?;
+
+        assert_eq!(
+            schema_json_str.matches("logicalType").count(),
+            1,
+            "Expected serialized schema to contain only one logicalType key: {schema_json_str}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn avro_rs_395_logical_type_written_once_for_decimal_fixed() -> TestResult {
+        let schema = Schema::parse_str(
+            r#"{
+            "type": "fixed",
+            "logicalType": "decimal",
+            "scale": 4,
+            "precision": 8,
+            "name": "FixedDecimal16",
+            "size": 16
+        }"#,
+        )?;
+
+        let schema_json_str = serde_json::to_string(&schema)?;
+
+        assert_eq!(
+            schema_json_str.matches("logicalType").count(),
+            1,
+            "Expected serialized schema to contain only one logicalType key: {schema_json_str}"
+        );
 
         Ok(())
     }
