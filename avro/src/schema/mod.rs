@@ -21,10 +21,7 @@ use crate::{
     error::{Details, Error},
     schema_equality, types,
     util::MapHelper,
-    validator::{
-        validate_enum_symbol_name, validate_namespace, validate_record_field_name,
-        validate_schema_name,
-    },
+    validator::{validate_enum_symbol_name, validate_namespace, validate_schema_name},
 };
 use digest::Digest;
 use log::{debug, error, warn};
@@ -40,9 +37,16 @@ use std::{
     fmt::Debug,
     hash::Hash,
     io::Read,
-    str::FromStr,
 };
-use strum_macros::{Display, EnumDiscriminants, EnumString};
+use strum_macros::{Display, EnumDiscriminants};
+
+mod record;
+use record::RecordSchemaParseLocation;
+pub use record::{
+    RecordField, RecordFieldBuilder, RecordFieldOrder, RecordSchema, RecordSchemaBuilder,
+};
+mod union;
+pub use union::UnionSchema;
 
 /// Represents an Avro schema fingerprint
 /// More information about Avro schema fingerprints can be found in the
@@ -641,200 +645,6 @@ pub(crate) fn resolve_names_with_schemata(
     Ok(())
 }
 
-/// Represents a `field` in a `record` Avro schema.
-#[derive(bon::Builder, Clone, Debug, PartialEq)]
-pub struct RecordField {
-    /// Name of the field.
-    pub name: String,
-    /// Documentation of the field.
-    #[builder(default)]
-    pub doc: Documentation,
-    /// Aliases of the field's name. They have no namespace.
-    pub aliases: Option<Vec<String>>,
-    /// Default value of the field.
-    /// This value will be used when reading Avro datum if schema resolution
-    /// is enabled.
-    pub default: Option<Value>,
-    /// Schema of the field.
-    pub schema: Schema,
-    /// Order of the field.
-    ///
-    /// **NOTE** This currently has no effect.
-    #[builder(default = RecordFieldOrder::Ignore)]
-    pub order: RecordFieldOrder,
-    /// Position of the field in the list of `field` of its parent `Schema`
-    #[builder(default)]
-    pub position: usize,
-    /// A collection of all unknown fields in the record field.
-    #[builder(default = BTreeMap::new())]
-    pub custom_attributes: BTreeMap<String, Value>,
-}
-
-/// Represents any valid order for a `field` in a `record` Avro schema.
-#[derive(Clone, Debug, Eq, PartialEq, EnumString)]
-#[strum(serialize_all = "kebab_case")]
-pub enum RecordFieldOrder {
-    Ascending,
-    Descending,
-    Ignore,
-}
-
-impl RecordField {
-    /// Parse a `serde_json::Value` into a `RecordField`.
-    fn parse(
-        field: &Map<String, Value>,
-        position: usize,
-        parser: &mut Parser,
-        enclosing_record: &Name,
-    ) -> AvroResult<Self> {
-        let name = field.name().ok_or(Details::GetNameFieldFromRecord)?;
-
-        validate_record_field_name(&name)?;
-
-        // TODO: "type" = "<record name>"
-        let schema = parser.parse_complex(
-            field,
-            &enclosing_record.namespace,
-            RecordSchemaParseLocation::FromField,
-        )?;
-
-        let default = field.get("default").cloned();
-        Self::resolve_default_value(
-            &schema,
-            &name,
-            &enclosing_record.fullname(None),
-            &parser.parsed_schemas,
-            &default,
-        )?;
-
-        let aliases = field.get("aliases").and_then(|aliases| {
-            aliases.as_array().map(|aliases| {
-                aliases
-                    .iter()
-                    .flat_map(|alias| alias.as_str())
-                    .map(|alias| alias.to_string())
-                    .collect::<Vec<String>>()
-            })
-        });
-
-        let order = field
-            .get("order")
-            .and_then(|order| order.as_str())
-            .and_then(|order| RecordFieldOrder::from_str(order).ok())
-            .unwrap_or(RecordFieldOrder::Ascending);
-
-        Ok(RecordField {
-            name,
-            doc: field.doc(),
-            default,
-            aliases,
-            order,
-            position,
-            custom_attributes: RecordField::get_field_custom_attributes(field, &schema),
-            schema,
-        })
-    }
-
-    fn resolve_default_value(
-        field_schema: &Schema,
-        field_name: &str,
-        record_name: &str,
-        names: &Names,
-        default: &Option<Value>,
-    ) -> AvroResult<()> {
-        if let Some(value) = default {
-            let avro_value = types::Value::from(value.clone());
-            match field_schema {
-                Schema::Union(union_schema) => {
-                    let schemas = &union_schema.schemas;
-                    let resolved = schemas.iter().any(|schema| {
-                        avro_value
-                            .to_owned()
-                            .resolve_internal(schema, names, &schema.namespace(), &None)
-                            .is_ok()
-                    });
-
-                    if !resolved {
-                        let schema: Option<&Schema> = schemas.first();
-                        return match schema {
-                            Some(first_schema) => Err(Details::GetDefaultUnion(
-                                SchemaKind::from(first_schema),
-                                types::ValueKind::from(avro_value),
-                            )
-                            .into()),
-                            None => Err(Details::EmptyUnion.into()),
-                        };
-                    }
-                }
-                _ => {
-                    let resolved = avro_value
-                        .resolve_internal(field_schema, names, &field_schema.namespace(), &None)
-                        .is_ok();
-
-                    if !resolved {
-                        return Err(Details::GetDefaultRecordField(
-                            field_name.to_string(),
-                            record_name.to_string(),
-                            field_schema.canonical_form(),
-                        )
-                        .into());
-                    }
-                }
-            };
-        }
-
-        Ok(())
-    }
-
-    fn get_field_custom_attributes(
-        field: &Map<String, Value>,
-        schema: &Schema,
-    ) -> BTreeMap<String, Value> {
-        let mut custom_attributes: BTreeMap<String, Value> = BTreeMap::new();
-        for (key, value) in field {
-            match key.as_str() {
-                "type" | "name" | "doc" | "default" | "order" | "position" | "aliases"
-                | "logicalType" => continue,
-                key if key == "symbols" && matches!(schema, Schema::Enum(_)) => continue,
-                key if key == "size" && matches!(schema, Schema::Fixed(_)) => continue,
-                key if key == "items" && matches!(schema, Schema::Array(_)) => continue,
-                key if key == "values" && matches!(schema, Schema::Map(_)) => continue,
-                _ => custom_attributes.insert(key.clone(), value.clone()),
-            };
-        }
-        custom_attributes
-    }
-
-    /// Returns true if this `RecordField` is nullable, meaning the schema is a `UnionSchema` where the first variant is `Null`.
-    pub fn is_nullable(&self) -> bool {
-        match self.schema {
-            Schema::Union(ref inner) => inner.is_nullable(),
-            _ => false,
-        }
-    }
-}
-
-/// A description of a Record schema.
-#[derive(bon::Builder, Debug, Clone)]
-pub struct RecordSchema {
-    /// The name of the schema
-    pub name: Name,
-    /// The aliases of the schema
-    #[builder(default)]
-    pub aliases: Aliases,
-    /// The documentation of the schema
-    #[builder(default)]
-    pub doc: Documentation,
-    /// The set of fields of the schema
-    pub fields: Vec<RecordField>,
-    /// The `lookup` table maps field names to their position in the `Vec`
-    /// of `fields`.
-    pub lookup: BTreeMap<String, usize>,
-    /// The custom attributes of the schema
-    #[builder(default = BTreeMap::new())]
-    pub attributes: BTreeMap<String, Value>,
-}
-
 /// A description of an Enum schema.
 #[derive(bon::Builder, Debug, Clone)]
 pub struct EnumSchema {
@@ -966,107 +776,6 @@ pub enum UuidSchema {
     Fixed(FixedSchema),
 }
 
-/// A description of a Union schema
-#[derive(Debug, Clone)]
-pub struct UnionSchema {
-    /// The schemas that make up this union
-    pub(crate) schemas: Vec<Schema>,
-    // Used to ensure uniqueness of schema inputs, and provide constant time finding of the
-    // schema index given a value.
-    // **NOTE** that this approach does not work for named types, and will have to be modified
-    // to support that. A simple solution is to also keep a mapping of the names used.
-    variant_index: BTreeMap<SchemaKind, usize>,
-}
-
-impl UnionSchema {
-    /// Creates a new UnionSchema from a vector of schemas.
-    ///
-    /// # Errors
-    /// Will return an error if `schemas` has duplicate unnamed schemas or if `schemas`
-    /// contains a union.
-    pub fn new(schemas: Vec<Schema>) -> AvroResult<Self> {
-        let mut vindex = BTreeMap::new();
-        for (i, schema) in schemas.iter().enumerate() {
-            if let Schema::Union(_) = schema {
-                return Err(Details::GetNestedUnion.into());
-            }
-            if !schema.is_named() && vindex.insert(SchemaKind::from(schema), i).is_some() {
-                return Err(Details::GetUnionDuplicate.into());
-            }
-        }
-        Ok(UnionSchema {
-            schemas,
-            variant_index: vindex,
-        })
-    }
-
-    /// Returns a slice to all variants of this schema.
-    pub fn variants(&self) -> &[Schema] {
-        &self.schemas
-    }
-
-    /// Returns true if the any of the variants of this `UnionSchema` is `Null`.
-    pub fn is_nullable(&self) -> bool {
-        self.schemas.iter().any(|x| matches!(x, Schema::Null))
-    }
-
-    /// Optionally returns a reference to the schema matched by this value, as well as its position
-    /// within this union.
-    ///
-    /// Extra arguments:
-    /// - `known_schemata` - mapping between `Name` and `Schema` - if passed, additional external schemas would be used to resolve references.
-    pub fn find_schema_with_known_schemata<S: Borrow<Schema> + Debug>(
-        &self,
-        value: &types::Value,
-        known_schemata: Option<&HashMap<Name, S>>,
-        enclosing_namespace: &Namespace,
-    ) -> Option<(usize, &Schema)> {
-        let schema_kind = SchemaKind::from(value);
-        if let Some(&i) = self.variant_index.get(&schema_kind) {
-            // fast path
-            Some((i, &self.schemas[i]))
-        } else {
-            // slow path (required for matching logical or named types)
-
-            // first collect what schemas we already know
-            let mut collected_names: HashMap<Name, &Schema> = known_schemata
-                .map(|names| {
-                    names
-                        .iter()
-                        .map(|(name, schema)| (name.clone(), schema.borrow()))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            self.schemas.iter().enumerate().find(|(_, schema)| {
-                let resolved_schema = ResolvedSchema::new_with_known_schemata(
-                    vec![*schema],
-                    enclosing_namespace,
-                    &collected_names,
-                )
-                .expect("Schema didn't successfully parse");
-                let resolved_names = resolved_schema.names_ref;
-
-                // extend known schemas with just resolved names
-                collected_names.extend(resolved_names);
-                let namespace = &schema.namespace().or_else(|| enclosing_namespace.clone());
-
-                value
-                    .clone()
-                    .resolve_internal(schema, &collected_names, namespace, &None)
-                    .is_ok()
-            })
-        }
-    }
-}
-
-// No need to compare variant_index, it is derivative of schemas.
-impl PartialEq for UnionSchema {
-    fn eq(&self, other: &UnionSchema) -> bool {
-        self.schemas.eq(&other.schemas)
-    }
-}
-
 type DecimalMetadata = usize;
 pub(crate) type Precision = DecimalMetadata;
 pub(crate) type Scale = DecimalMetadata;
@@ -1089,18 +798,8 @@ fn parse_json_integer_for_decimal(value: &serde_json::Number) -> Result<DecimalM
     })
 }
 
-#[derive(Debug, Default)]
-enum RecordSchemaParseLocation {
-    /// When the parse is happening at root level
-    #[default]
-    Root,
-
-    /// When the parse is happening inside a record field
-    FromField,
-}
-
 #[derive(Default)]
-struct Parser {
+pub(crate) struct Parser {
     input_schemas: HashMap<Name, Value>,
     /// A map of name -> Schema::Ref
     /// Used to resolve cyclic references, i.e. when a
@@ -2417,31 +2116,6 @@ impl Serialize for Schema {
     }
 }
 
-impl Serialize for RecordField {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("name", &self.name)?;
-        map.serialize_entry("type", &self.schema)?;
-
-        if let Some(ref default) = self.default {
-            map.serialize_entry("default", default)?;
-        }
-
-        if let Some(ref aliases) = self.aliases {
-            map.serialize_entry("aliases", aliases)?;
-        }
-
-        for attr in &self.custom_attributes {
-            map.serialize_entry(attr.0, attr.1)?;
-        }
-
-        map.end()
-    }
-}
-
 /// Parses a **valid** avro schema into the Parsing Canonical Form.
 /// https://avro.apache.org/docs/current/specification/#parsing-canonical-form-for-schemas
 fn parsing_canonical_form(schema: &Value, defined_names: &mut HashSet<String>) -> String {
@@ -2926,42 +2600,9 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_avro_3621_nullable_record_field() -> TestResult {
-        let nullable_record_field = RecordField::builder()
-            .name("next".to_string())
-            .schema(Schema::Union(UnionSchema::new(vec![
-                Schema::Null,
-                Schema::Ref {
-                    name: Name {
-                        name: "LongList".to_owned(),
-                        namespace: None,
-                    },
-                },
-            ])?))
-            .order(RecordFieldOrder::Ascending)
-            .position(1)
-            .build();
-
-        assert!(nullable_record_field.is_nullable());
-
-        let non_nullable_record_field = RecordField::builder()
-            .name("next".to_string())
-            .default(json!(2))
-            .schema(Schema::Long)
-            .order(RecordFieldOrder::Ascending)
-            .position(1)
-            .build();
-
-        assert!(!non_nullable_record_field.is_nullable());
-        Ok(())
-    }
-
     // AVRO-3248
     #[test]
     fn test_union_of_records() -> TestResult {
-        use std::iter::FromIterator;
-
         // A and B are the same except the name.
         let schema_str_a = r#"{
             "name": "A",
@@ -3009,7 +2650,6 @@ mod tests {
                         ])?))
                         .build(),
                 ])
-                .lookup(BTreeMap::from_iter(vec![("field_one".to_string(), 0)]))
                 .build(),
         );
 

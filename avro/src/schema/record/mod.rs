@@ -15,18 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use apache_avro::AvroSchema;
+mod field;
+pub use field::{RecordField, RecordFieldBuilder, RecordFieldOrder};
 
-#[derive(AvroSchema)]
-struct Foo {
-    a: String,
-    b: i32,
-}
-
-#[derive(AvroSchema)]
-#[serde(transparent)]
-struct Bar {
-    foo: Foo,
-}
-
-pub fn main() {}
+mod schema;
+pub(crate) use schema::RecordSchemaParseLocation;
+pub use schema::{RecordSchema, RecordSchemaBuilder};
