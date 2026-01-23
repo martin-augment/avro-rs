@@ -1219,6 +1219,7 @@ mod tests {
         duration::{Days, Millis, Months},
         error::Details,
         schema::RecordFieldOrder,
+        to_value,
     };
     use apache_avro_test_helper::{
         TestResult,
@@ -1356,7 +1357,7 @@ mod tests {
             (
                 Value::Fixed(12, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
                 Schema::Duration(FixedSchema {
-                    name: Name::from("TestName"),
+                    name: Name::try_from("TestName")?,
                     aliases: None,
                     doc: None,
                     size: 12,
@@ -1369,7 +1370,7 @@ mod tests {
             (
                 Value::Fixed(11, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
                 Schema::Duration(FixedSchema {
-                    name: Name::from("TestName"),
+                    name: Name::try_from("TestName")?,
                     aliases: None,
                     doc: None,
                     size: 12,
@@ -1924,7 +1925,7 @@ Field with name '"b"' is not a member of the map items"#,
             value
                 .clone()
                 .resolve(&Schema::Duration(FixedSchema {
-                    name: Name::from("TestName"),
+                    name: Name::try_from("TestName").expect("Name is valid"),
                     aliases: None,
                     doc: None,
                     size: 12,
@@ -1937,7 +1938,7 @@ Field with name '"b"' is not a member of the map items"#,
         assert!(
             Value::Long(1i64)
                 .resolve(&Schema::Duration(FixedSchema {
-                    name: Name::from("TestName"),
+                    name: Name::try_from("TestName").expect("Name is valid"),
                     aliases: None,
                     doc: None,
                     size: 12,
@@ -2809,7 +2810,6 @@ Field with name '"b"' is not a member of the map items"#,
 
     #[test]
     fn test_avro_3460_validation_with_refs_real_struct() -> TestResult {
-        use crate::serde::ser::Serializer;
         use serde::Serialize;
 
         #[derive(Serialize, Clone)]
@@ -2874,12 +2874,9 @@ Field with name '"b"' is not a member of the map items"#,
             b: None,
         };
 
-        let mut ser = Serializer::default();
-        let test_outer1: Value = test_outer1.serialize(&mut ser)?;
-        let mut ser = Serializer::default();
-        let test_outer2: Value = test_outer2.serialize(&mut ser)?;
-        let mut ser = Serializer::default();
-        let test_outer3: Value = test_outer3.serialize(&mut ser)?;
+        let test_outer1: Value = to_value(test_outer1)?;
+        let test_outer2: Value = to_value(test_outer2)?;
+        let test_outer3: Value = to_value(test_outer3)?;
 
         assert!(
             !test_outer1.validate(&schema),
@@ -2898,7 +2895,6 @@ Field with name '"b"' is not a member of the map items"#,
     }
 
     fn avro_3674_with_or_without_namespace(with_namespace: bool) -> TestResult {
-        use crate::serde::ser::Serializer;
         use serde::Serialize;
 
         let schema_str = r#"
@@ -2969,8 +2965,7 @@ Field with name '"b"' is not a member of the map items"#,
             },
         };
 
-        let mut ser = Serializer::default();
-        let test_value: Value = msg.serialize(&mut ser)?;
+        let test_value: Value = to_value(msg)?;
         assert!(test_value.validate(&schema), "test_value should validate");
         assert!(
             test_value.resolve(&schema).is_ok(),
@@ -2991,7 +2986,6 @@ Field with name '"b"' is not a member of the map items"#,
     }
 
     fn avro_3688_schema_resolution_panic(set_field_b: bool) -> TestResult {
-        use crate::serde::ser::Serializer;
         use serde::{Deserialize, Serialize};
 
         let schema_str = r#"{
@@ -3052,8 +3046,7 @@ Field with name '"b"' is not a member of the map items"#,
             },
         };
 
-        let mut ser = Serializer::default();
-        let test_value: Value = msg.serialize(&mut ser)?;
+        let test_value: Value = to_value(msg)?;
         assert!(test_value.validate(&schema), "test_value should validate");
         assert!(
             test_value.resolve(&schema).is_ok(),
@@ -3187,7 +3180,7 @@ Field with name '"b"' is not a member of the map items"#,
         let value = Value::Bytes(vec![97, 98, 99]);
         assert_eq!(
             value.resolve(&Schema::Fixed(FixedSchema {
-                name: "test".into(),
+                name: "test".try_into()?,
                 aliases: None,
                 doc: None,
                 size: 3,
@@ -3201,7 +3194,7 @@ Field with name '"b"' is not a member of the map items"#,
         assert!(
             value
                 .resolve(&Schema::Fixed(FixedSchema {
-                    name: "test".into(),
+                    name: "test".try_into()?,
                     aliases: None,
                     doc: None,
                     size: 3,
@@ -3215,7 +3208,7 @@ Field with name '"b"' is not a member of the map items"#,
         assert!(
             value
                 .resolve(&Schema::Fixed(FixedSchema {
-                    name: "test".into(),
+                    name: "test".try_into()?,
                     aliases: None,
                     doc: None,
                     size: 3,
