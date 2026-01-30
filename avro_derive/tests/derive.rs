@@ -2155,3 +2155,177 @@ fn avro_rs_414_round_trip_char_u64_u128_i128() {
         d: i128::MAX,
     });
 }
+
+#[test]
+fn avro_rs_448_flatten_recurring_type() {
+    #[derive(AvroSchema)]
+    #[expect(dead_code, reason = "Only testing derived schema")]
+    pub enum Color {
+        G,
+    }
+
+    #[derive(AvroSchema)]
+    pub struct A {
+        pub _color: Color,
+    }
+
+    #[derive(AvroSchema)]
+    pub struct C {
+        #[serde(flatten)]
+        pub _a: A,
+    }
+
+    #[derive(AvroSchema)]
+    pub struct TestStruct {
+        pub _a: Color,
+        pub _c: C,
+    }
+
+    let schema = Schema::parse_str(
+        r#"{
+        "name": "TestStruct",
+        "type":"record",
+        "fields": [
+            {
+                "name":"_a",
+                "type": {
+                    "name": "Color",
+                    "type": "enum",
+                    "symbols": ["G"]
+                }
+            },
+            {
+                "name":"_c",
+                "type": {
+                    "name":"C",
+                    "type":"record",
+                    "fields": [
+                        {
+                            "name": "_color",
+                            "type": "Color"
+                        }
+                    ]
+                }
+            }
+        ]
+    }"#,
+    )
+    .unwrap();
+
+    assert_eq!(TestStruct::get_schema(), schema);
+}
+
+#[test]
+fn avro_rs_448_flatten_transparent_sandwich() {
+    #[derive(AvroSchema)]
+    #[expect(dead_code, reason = "Only testing derived schema")]
+    pub enum Color {
+        G,
+    }
+
+    #[derive(AvroSchema)]
+    pub struct A {
+        pub _color: Color,
+    }
+
+    #[derive(AvroSchema)]
+    pub struct C {
+        #[serde(flatten)]
+        pub _a: A,
+    }
+
+    #[derive(AvroSchema)]
+    #[serde(transparent)]
+    pub struct B {
+        pub _c: C,
+    }
+
+    #[derive(AvroSchema)]
+    pub struct TestStruct {
+        pub _a: Color,
+        pub _b: B,
+        pub _c: C,
+    }
+
+    let schema = Schema::parse_str(
+        r#"{
+        "name": "TestStruct",
+        "type":"record",
+        "fields": [
+            {
+                "name":"_a",
+                "type": {
+                    "name": "Color",
+                    "type": "enum",
+                    "symbols": ["G"]
+                }
+            },
+            {
+                "name":"_b",
+                "type": {
+                    "name":"C",
+                    "type":"record",
+                    "fields": [
+                        {
+                            "name": "_color",
+                            "type": "Color"
+                        }
+                    ]
+                }
+            },
+            {
+                "name":"_c",
+                "type": "C"
+            }
+        ]
+    }"#,
+    )
+    .unwrap();
+
+    assert_eq!(TestStruct::get_schema(), schema);
+}
+
+#[test]
+fn avro_rs_448_transparent_with() {
+    #[derive(AvroSchema)]
+    #[serde(transparent)]
+    pub struct TestStruct {
+        #[avro(with = || Schema::Long)]
+        pub _a: i32,
+    }
+
+    let mut named_schemas = HashMap::new();
+    assert_eq!(
+        TestStruct::get_record_fields_in_ctxt(&mut named_schemas, &None),
+        None
+    );
+    assert!(named_schemas.is_empty());
+}
+
+#[test]
+fn avro_rs_448_transparent_with_2() {
+    #[derive(AvroSchema)]
+    pub struct Foo {
+        _field: i32,
+        _a: String,
+    }
+
+    #[derive(AvroSchema)]
+    #[serde(transparent)]
+    pub struct TestStruct {
+        #[avro(with = Foo::get_schema_in_ctxt)]
+        pub _a: Foo,
+    }
+
+    let mut named_schemas = HashMap::new();
+    let fields = TestStruct::get_record_fields_in_ctxt(&mut named_schemas, &None).unwrap();
+    assert!(named_schemas.is_empty());
+    assert_eq!(fields.len(), 2);
+
+    TestStruct::get_schema_in_ctxt(&mut named_schemas, &None);
+    assert_eq!(named_schemas.len(), 1);
+
+    let fields = TestStruct::get_record_fields_in_ctxt(&mut named_schemas, &None).unwrap();
+    assert_eq!(named_schemas.len(), 1);
+    assert_eq!(fields.len(), 2);
+}
