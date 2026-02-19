@@ -56,6 +56,7 @@ pub use crate::schema::{
     resolve::ResolvedSchema,
     union::UnionSchema,
 };
+use bon::bon;
 
 /// Represents documentation for complex Avro schemas.
 pub type Documentation = Option<String>;
@@ -383,6 +384,7 @@ type DecimalMetadata = usize;
 pub(crate) type Precision = DecimalMetadata;
 pub(crate) type Scale = DecimalMetadata;
 
+#[bon]
 impl Schema {
     /// Converts `self` into its [Parsing Canonical Form].
     ///
@@ -645,17 +647,13 @@ impl Schema {
         }
     }
 
-    /// Returns a `Schema::Map` with the given types.
-    pub fn map(types: Schema) -> Self {
-        Schema::Map(MapSchema {
-            types: Box::new(types),
-            default: None,
-            attributes: Default::default(),
-        })
-    }
-
-    /// Returns a `Schema::Map` with the given types and custom attributes.
-    pub fn map_with_attributes(types: Schema, attributes: BTreeMap<String, JsonValue>) -> Self {
+    /// Returns a `Schema::Map` with the given types and optional custom attributes.
+    #[builder(finish_fn = build)]
+    pub fn map(
+        #[builder(start_fn)] types: Schema,
+        attributes: Option<BTreeMap<String, JsonValue>>,
+    ) -> Self {
+        let attributes = attributes.unwrap_or_default();
         Schema::Map(MapSchema {
             types: Box::new(types),
             default: None,
@@ -663,17 +661,13 @@ impl Schema {
         })
     }
 
-    /// Returns a `Schema::Array` with the given items.
-    pub fn array(items: Schema) -> Self {
-        Schema::Array(ArraySchema {
-            items: Box::new(items),
-            default: None,
-            attributes: Default::default(),
-        })
-    }
-
-    /// Returns a `Schema::Array` with the given items and custom attributes.
-    pub fn array_with_attributes(items: Schema, attributes: BTreeMap<String, JsonValue>) -> Self {
+    /// Returns a `Schema::Array` with the given items and optional custom attributes.
+    #[builder(finish_fn = build)]
+    pub fn array(
+        #[builder(start_fn)] items: Schema,
+        attributes: Option<BTreeMap<String, JsonValue>>,
+    ) -> Self {
+        let attributes = attributes.unwrap_or_default();
         Schema::Array(ArraySchema {
             items: Box::new(items),
             default: None,
@@ -1154,14 +1148,14 @@ mod tests {
     #[test]
     fn test_array_schema() -> TestResult {
         let schema = Schema::parse_str(r#"{"type": "array", "items": "string"}"#)?;
-        assert_eq!(Schema::array(Schema::String), schema);
+        assert_eq!(Schema::array(Schema::String).build(), schema);
         Ok(())
     }
 
     #[test]
     fn test_map_schema() -> TestResult {
         let schema = Schema::parse_str(r#"{"type": "map", "values": "double"}"#)?;
-        assert_eq!(Schema::map(Schema::Double), schema);
+        assert_eq!(Schema::map(Schema::Double).build(), schema);
         Ok(())
     }
 
@@ -1607,7 +1601,8 @@ mod tests {
                             aliases: None,
                             schema: Schema::array(Schema::Ref {
                                 name: Name::new("Node")?,
-                            }),
+                            })
+                            .build(),
                             order: RecordFieldOrder::Ascending,
                             position: 1,
                             custom_attributes: Default::default(),
@@ -4682,10 +4677,9 @@ mod tests {
 
     #[test]
     fn test_avro_3927_serialize_array_with_custom_attributes() -> TestResult {
-        let expected = Schema::array_with_attributes(
-            Schema::Long,
-            BTreeMap::from([("field-id".to_string(), "1".into())]),
-        );
+        let expected = Schema::array(Schema::Long)
+            .attributes(BTreeMap::from([("field-id".to_string(), "1".into())]))
+            .build();
 
         let value = serde_json::to_value(&expected)?;
         let serialized = serde_json::to_string(&value)?;
@@ -4705,10 +4699,9 @@ mod tests {
 
     #[test]
     fn test_avro_3927_serialize_map_with_custom_attributes() -> TestResult {
-        let expected = Schema::map_with_attributes(
-            Schema::Long,
-            BTreeMap::from([("field-id".to_string(), "1".into())]),
-        );
+        let expected = Schema::map(Schema::Long)
+            .attributes(BTreeMap::from([("field-id".to_string(), "1".into())]))
+            .build();
 
         let value = serde_json::to_value(&expected)?;
         let serialized = serde_json::to_string(&value)?;
