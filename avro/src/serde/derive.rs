@@ -81,6 +81,10 @@ use std::collections::{HashMap, HashSet};
 ///
 ///    Set the `doc` attribute of the schema. Defaults to the documentation of the type.
 ///
+///  - `#[avro(default = r#"{"field": 42, "other": "Spam"}"#)]`
+///
+///    Provide the default value for this type when it is used in a field.
+///
 ///  - `#[avro(alias = "name")]`
 ///
 ///    Set the `alias` attribute of the schema. Can be specified multiple times.
@@ -113,11 +117,22 @@ use std::collections::{HashMap, HashSet};
 ///
 ///    Set the `doc` attribute of the field. Defaults to the documentation of the field.
 ///
-///  - `#[avro(default = "null")]`
+///  - `#[avro(default = ..)]`
 ///
-///    Set the `default` attribute of the field.
+///    Control the `default` attribute of the field. When not used, it will use [`AvroSchemaComponent::field_default`]
+///    to get the default value for a type. To remove the `default` attribute for a field, set `default` to `false`: `#[avro(default = false)]`.
 ///
-///    _Note:_ This is a JSON value not a Rust value, as this is put in the schema itself.
+///    To override or set a default value, provide a JSON string:
+///
+///      - Null: `#[avro(default = "null")]`
+///      - Boolean: `#[avro(default = "true")]`.
+///      - Number: `#[avro(default = "42")]` or `#[avro(default = "42.5")]`
+///      - String: `#[avro(default = r#""String needs extra quotes""#)]`.
+///      - Array: `#[avro(default = r#"["One", "Two", "Three"]"#)]`.
+///      - Object: `#[avro(default = r#"{"One": 1}"#)]`.
+///
+///    See [the specification](https://avro.apache.org/docs/++version++/specification/#schema-record)
+///    for details on how to map a type to a JSON value.
 ///
 ///  - `#[serde(alias = "name")]`
 ///
@@ -220,6 +235,11 @@ pub trait AvroSchema {
 ///     fn get_record_fields_in_ctxt(_: usize, _: &mut HashSet<Name>, _: &Namespace) -> Option<Vec<RecordField>> {
 ///         None // A Schema::Int is not a Schema::Record so there are no fields to return
 ///     }
+///
+///     fn field_default() -> Option<serde_json::Value> {
+///         // Zero as default value. Can also be None if you don't want to provide a default value
+///         Some(0u8.into())
+///     }
 ///}
 /// ```
 ///
@@ -242,6 +262,10 @@ pub trait AvroSchema {
 ///     fn get_record_fields_in_ctxt(first_field_position: usize, named_schemas: &mut HashSet<Name>, enclosing_namespace: &Namespace) -> Option<Vec<RecordField>> {
 ///         T::get_record_fields_in_ctxt(first_field_position, named_schemas, enclosing_namespace)
 ///     }
+///
+///     fn field_default() -> Option<serde_json::Value> {
+///         T::field_default()
+///     }
 ///}
 /// ```
 ///
@@ -256,6 +280,7 @@ pub trait AvroSchema {
 ///  - Implement `get_record_fields_in_ctxt` as the default implementation has to be implemented
 ///    with backtracking and a lot of cloning.
 ///      - Even if your schema is not a record, still implement the function and just return `None`
+///  - Implement `field_default()` if you want to use `#[serde(skip_serializing{,_if})]`.
 ///
 /// ```
 /// # use apache_avro::{Schema, serde::{AvroSchemaComponent}, schema::{Name, Namespace, RecordField, RecordSchema}};
@@ -305,6 +330,11 @@ pub trait AvroSchema {
 ///                 .build(),
 ///         ])
 ///     }
+///
+///     fn field_default() -> Option<serde_json::Value> {
+///         // This type does not provide a default value
+///         None
+///     }
 ///}
 /// ```
 pub trait AvroSchemaComponent {
@@ -331,6 +361,16 @@ pub trait AvroSchemaComponent {
             enclosing_namespace,
             Self::get_schema_in_ctxt,
         )
+    }
+
+    /// The default value of this type when used for a record field.
+    ///
+    /// `None` means no default value, which is also the default implementation.
+    ///
+    /// Implementations of this trait provided by this crate return `None` except for `Option<T>`
+    /// which returns `Some(serde_json::Value::Null)`.
+    fn field_default() -> Option<serde_json::Value> {
+        None
     }
 }
 
@@ -487,6 +527,10 @@ macro_rules! impl_schema (
             fn get_record_fields_in_ctxt(_: usize, _: &mut HashSet<Name>, _: &Namespace) -> Option<Vec<RecordField>> {
                 None
             }
+
+            fn field_default() -> Option<serde_json::Value> {
+                None
+            }
         }
     );
 );
@@ -515,6 +559,10 @@ macro_rules! impl_passthrough_schema (
             fn get_record_fields_in_ctxt(first_field_position: usize, named_schemas: &mut HashSet<Name>, enclosing_namespace: &Namespace) -> Option<Vec<RecordField>> {
                 T::get_record_fields_in_ctxt(first_field_position, named_schemas, enclosing_namespace)
             }
+
+            fn field_default() -> Option<serde_json::Value> {
+                T::field_default()
+            }
         }
     );
 );
@@ -533,6 +581,10 @@ macro_rules! impl_array_schema (
             }
 
             fn get_record_fields_in_ctxt(_: usize, _: &mut HashSet<Name>, _: &Namespace) -> Option<Vec<RecordField>> {
+                None
+            }
+
+            fn field_default() -> Option<serde_json::Value> {
                 None
             }
         }
@@ -562,6 +614,11 @@ where
     ) -> Option<Vec<RecordField>> {
         None
     }
+
+    /// If `T` has a field default, this will return an array of elements with that default. Otherwise there is no default.
+    fn field_default() -> Option<serde_json::Value> {
+        None
+    }
 }
 
 impl<T> AvroSchemaComponent for HashMap<String, T>
@@ -580,6 +637,10 @@ where
         _: &mut HashSet<Name>,
         _: &Namespace,
     ) -> Option<Vec<RecordField>> {
+        None
+    }
+
+    fn field_default() -> Option<serde_json::Value> {
         None
     }
 }
@@ -608,6 +669,10 @@ where
         _: &Namespace,
     ) -> Option<Vec<RecordField>> {
         None
+    }
+
+    fn field_default() -> Option<serde_json::Value> {
+        Some(serde_json::Value::Null)
     }
 }
 
@@ -642,6 +707,10 @@ impl AvroSchemaComponent for core::time::Duration {
         _: &mut HashSet<Name>,
         _: &Namespace,
     ) -> Option<Vec<RecordField>> {
+        None
+    }
+
+    fn field_default() -> Option<serde_json::Value> {
         None
     }
 }
@@ -679,6 +748,10 @@ impl AvroSchemaComponent for uuid::Uuid {
     ) -> Option<Vec<RecordField>> {
         None
     }
+
+    fn field_default() -> Option<serde_json::Value> {
+        None
+    }
 }
 
 impl AvroSchemaComponent for u64 {
@@ -710,6 +783,10 @@ impl AvroSchemaComponent for u64 {
         _: &mut HashSet<Name>,
         _: &Namespace,
     ) -> Option<Vec<RecordField>> {
+        None
+    }
+
+    fn field_default() -> Option<serde_json::Value> {
         None
     }
 }
@@ -745,6 +822,10 @@ impl AvroSchemaComponent for u128 {
     ) -> Option<Vec<RecordField>> {
         None
     }
+
+    fn field_default() -> Option<serde_json::Value> {
+        None
+    }
 }
 
 impl AvroSchemaComponent for i128 {
@@ -778,12 +859,18 @@ impl AvroSchemaComponent for i128 {
     ) -> Option<Vec<RecordField>> {
         None
     }
+
+    fn field_default() -> Option<serde_json::Value> {
+        None
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::schema::{FixedSchema, Name};
-    use crate::{AvroSchema, Schema};
+    use crate::{
+        AvroSchema, Schema,
+        schema::{FixedSchema, Name},
+    };
     use apache_avro_test_helper::TestResult;
 
     #[test]
