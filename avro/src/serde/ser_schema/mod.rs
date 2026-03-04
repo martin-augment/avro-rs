@@ -27,7 +27,7 @@ use crate::{
 };
 use bigdecimal::BigDecimal;
 use serde::{Serialize, ser};
-use std::{borrow::Cow, cmp::Ordering, collections::HashMap, io::Write, str::FromStr};
+use std::{cmp::Ordering, collections::HashMap, io::Write, str::FromStr};
 
 const COLLECTION_SERIALIZER_ITEM_LIMIT: usize = 1024;
 const COLLECTION_SERIALIZER_DEFAULT_INIT_ITEM_CAPACITY: usize = 32;
@@ -273,11 +273,16 @@ impl<'a, 's, W: Write> SchemaAwareWriteSerializeStruct<'a, 's, W> {
         }
     }
 
-    fn serialize_next_field<T>(&mut self, field: &RecordField, value: &T) -> Result<(), Error>
+    fn serialize_next_field<T>(
+        &mut self,
+        field: &RecordField,
+        position: usize,
+        value: &T,
+    ) -> Result<(), Error>
     where
         T: ?Sized + ser::Serialize,
     {
-        match self.field_position.cmp(&field.position) {
+        match self.field_position.cmp(&position) {
             Ordering::Equal => {
                 // If we receive fields in order, write them directly to the main writer
                 let mut value_ser = SchemaAwareWriteSerializer::new(
@@ -310,7 +315,7 @@ impl<'a, 's, W: Write> SchemaAwareWriteSerializeStruct<'a, 's, W> {
                     self.ser.enclosing_namespace.clone(),
                 );
                 value.serialize(&mut value_ser)?;
-                if self.field_cache.insert(field.position, bytes).is_some() {
+                if self.field_cache.insert(position, bytes).is_some() {
                     Err(Details::FieldNameDuplicate(field.name.clone()).into())
                 } else {
                     Ok(())
@@ -336,7 +341,7 @@ impl<'a, 's, W: Write> SchemaAwareWriteSerializeStruct<'a, 's, W> {
                 self.bytes_written += bytes.len();
                 self.field_position += 1;
             } else if let Some(default) = &field_info.default {
-                self.serialize_next_field(field_info, default)
+                self.serialize_next_field(field_info, self.field_position, default)
                     .map_err(|e| Details::SerializeRecordFieldWithSchema {
                         field_name: field_info.name.clone(),
                         record_schema: Schema::Record(self.record_schema.clone()),
@@ -373,52 +378,49 @@ impl<W: Write> ser::SerializeStruct for SchemaAwareWriteSerializeStruct<'_, '_, 
     where
         T: ?Sized + ser::Serialize,
     {
-        let record_field = self
-            .record_schema
-            .lookup
-            .get(key)
-            .and_then(|idx| self.record_schema.fields.get(*idx));
-
-        match record_field {
-            Some(field) => self.serialize_next_field(field, value).map_err(|e| {
-                Details::SerializeRecordFieldWithSchema {
-                    field_name: key.to_string(),
-                    record_schema: Schema::Record(self.record_schema.clone()),
-                    error: Box::new(e),
-                }
-                .into()
-            }),
-            None => Err(Details::FieldName(String::from(key)).into()),
+        if let Some(position) = self.record_schema.lookup.get(key).copied() {
+            let field = self
+                .record_schema
+                .fields
+                .get(position)
+                .ok_or_else(|| Details::FieldName(String::from(key)))?;
+            self.serialize_next_field(field, position, value)
+                .map_err(|e| {
+                    Details::SerializeRecordFieldWithSchema {
+                        field_name: key.to_string(),
+                        record_schema: Schema::Record(self.record_schema.clone()),
+                        error: Box::new(e),
+                    }
+                    .into()
+                })
+        } else {
+            Err(Details::FieldName(String::from(key)).into())
         }
     }
 
     fn skip_field(&mut self, key: &'static str) -> Result<(), Self::Error> {
-        let skipped_field = self
-            .record_schema
-            .lookup
-            .get(key)
-            .and_then(|idx| self.record_schema.fields.get(*idx));
-
-        if let Some(skipped_field) = skipped_field {
-            if let Some(default) = &skipped_field.default {
-                self.serialize_next_field(skipped_field, default)
-                    .map_err(|e| Details::SerializeRecordFieldWithSchema {
-                        field_name: key.to_string(),
-                        record_schema: Schema::Record(self.record_schema.clone()),
-                        error: Box::new(e),
-                    })?;
+        if let Some(position) = self.record_schema.lookup.get(key).copied() {
+            let field = &self.record_schema.fields[position];
+            if let Some(default) = &field.default {
+                self.serialize_next_field(field, position, default)
+                    .map_err(|e| {
+                        Details::SerializeRecordFieldWithSchema {
+                            field_name: key.to_string(),
+                            record_schema: Schema::Record(self.record_schema.clone()),
+                            error: Box::new(e),
+                        }
+                        .into()
+                    })
             } else {
-                return Err(Details::MissingDefaultForSkippedField {
+                Err(Details::MissingDefaultForSkippedField {
                     field_name: key.to_string(),
                     schema: Schema::Record(self.record_schema.clone()),
                 }
-                .into());
+                .into())
             }
         } else {
-            return Err(Details::GetField(key.to_string()).into());
+            Err(Details::GetField(key.to_string()).into())
         }
-
-        Ok(())
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
@@ -453,21 +455,19 @@ impl<W: Write> ser::SerializeMap for SchemaAwareWriteSerializeStruct<'_, '_, W> 
         T: ?Sized + Serialize,
     {
         let key = self.map_field_name.take().ok_or(Details::MapNoKey)?;
-        let record_field = self
-            .record_schema
-            .lookup
-            .get(&key)
-            .and_then(|idx| self.record_schema.fields.get(*idx));
-        match record_field {
-            Some(field) => self.serialize_next_field(field, value).map_err(|e| {
-                Details::SerializeRecordFieldWithSchema {
-                    field_name: key.to_string(),
-                    record_schema: Schema::Record(self.record_schema.clone()),
-                    error: Box::new(e),
-                }
-                .into()
-            }),
-            None => Err(Details::FieldName(key).into()),
+        if let Some(position) = self.record_schema.lookup.get(&key).copied() {
+            let field = &self.record_schema.fields[position];
+            self.serialize_next_field(field, position, value)
+                .map_err(|e| {
+                    Details::SerializeRecordFieldWithSchema {
+                        field_name: key.to_string(),
+                        record_schema: Schema::Record(self.record_schema.clone()),
+                        error: Box::new(e),
+                    }
+                    .into()
+                })
+        } else {
+            Err(Details::FieldName(key).into())
         }
     }
 
@@ -633,13 +633,7 @@ impl<'s, W: Write> SchemaAwareWriteSerializer<'s, W> {
     }
 
     fn get_ref_schema(&self, name: &'s Name) -> Result<&'s Schema, Error> {
-        let full_name = match name.namespace {
-            Some(_) => Cow::Borrowed(name),
-            None => Cow::Owned(Name {
-                name: name.name.clone(),
-                namespace: self.enclosing_namespace.clone(),
-            }),
-        };
+        let full_name = name.fully_qualified_name(self.enclosing_namespace.as_deref());
 
         let ref_schema = self.names.get(full_name.as_ref()).copied();
 
@@ -799,7 +793,7 @@ impl<'s, W: Write> SchemaAwareWriteSerializer<'s, W> {
         };
 
         match schema {
-            Schema::Fixed(fixed) if fixed.size == 16 && fixed.name.name == "i128" => {
+            Schema::Fixed(fixed) if fixed.size == 16 && fixed.name.name() == "i128" => {
                 self.writer
                     .write_all(&value.to_le_bytes())
                     .map_err(Details::WriteBytes)?;
@@ -808,7 +802,7 @@ impl<'s, W: Write> SchemaAwareWriteSerializer<'s, W> {
             Schema::Union(union_schema) => {
                 for (i, variant_schema) in union_schema.schemas.iter().enumerate() {
                     match variant_schema {
-                        Schema::Fixed(fixed) if fixed.size == 16 && fixed.name.name == "i128" => {
+                        Schema::Fixed(fixed) if fixed.size == 16 && fixed.name.name() == "i128" => {
                             encode_int(i as i32, &mut *self.writer)?;
                             return self.serialize_i128_with_schema(value, variant_schema);
                         }
@@ -953,7 +947,7 @@ impl<'s, W: Write> SchemaAwareWriteSerializer<'s, W> {
                     i64::try_from(value).map_err(|cause| create_error(cause.to_string()))?;
                 encode_long(long_value, &mut self.writer)
             }
-            Schema::Fixed(fixed) if fixed.size == 8 && fixed.name.name == "u64" => {
+            Schema::Fixed(fixed) if fixed.size == 8 && fixed.name.name() == "u64" => {
                 self.writer
                     .write_all(&value.to_le_bytes())
                     .map_err(Details::WriteBytes)?;
@@ -976,7 +970,7 @@ impl<'s, W: Write> SchemaAwareWriteSerializer<'s, W> {
                             encode_int(i as i32, &mut *self.writer)?;
                             return self.serialize_u64_with_schema(value, variant_schema);
                         }
-                        Schema::Fixed(fixed) if fixed.size == 8 && fixed.name.name == "u64" => {
+                        Schema::Fixed(fixed) if fixed.size == 8 && fixed.name.name() == "u64" => {
                             encode_int(i as i32, &mut *self.writer)?;
                             return self.serialize_u64_with_schema(value, variant_schema);
                         }
@@ -1002,7 +996,7 @@ impl<'s, W: Write> SchemaAwareWriteSerializer<'s, W> {
         };
 
         match schema {
-            Schema::Fixed(fixed) if fixed.size == 16 && fixed.name.name == "u128" => {
+            Schema::Fixed(fixed) if fixed.size == 16 && fixed.name.name() == "u128" => {
                 self.writer
                     .write_all(&value.to_le_bytes())
                     .map_err(Details::WriteBytes)?;
@@ -1011,7 +1005,7 @@ impl<'s, W: Write> SchemaAwareWriteSerializer<'s, W> {
             Schema::Union(union_schema) => {
                 for (i, variant_schema) in union_schema.schemas.iter().enumerate() {
                     match variant_schema {
-                        Schema::Fixed(fixed) if fixed.size == 16 && fixed.name.name == "u128" => {
+                        Schema::Fixed(fixed) if fixed.size == 16 && fixed.name.name() == "u128" => {
                             encode_int(i as i32, &mut *self.writer)?;
                             return self.serialize_u128_with_schema(value, variant_schema);
                         }
@@ -1112,7 +1106,7 @@ impl<'s, W: Write> SchemaAwareWriteSerializer<'s, W> {
 
         match schema {
             Schema::String | Schema::Bytes => self.write_bytes(String::from(value).as_bytes()),
-            Schema::Fixed(fixed) if fixed.size == 4 && fixed.name.name == "char" => {
+            Schema::Fixed(fixed) if fixed.size == 4 && fixed.name.name() == "char" => {
                 self.writer
                     .write_all(&u32::from(value).to_le_bytes())
                     .map_err(Details::WriteBytes)?;
@@ -1125,7 +1119,7 @@ impl<'s, W: Write> SchemaAwareWriteSerializer<'s, W> {
                             encode_int(i as i32, &mut *self.writer)?;
                             return self.serialize_char_with_schema(value, variant_schema);
                         }
-                        Schema::Fixed(fixed) if fixed.size == 4 && fixed.name.name == "char" => {
+                        Schema::Fixed(fixed) if fixed.size == 4 && fixed.name.name() == "char" => {
                             encode_int(i as i32, &mut *self.writer)?;
                             return self.serialize_char_with_schema(value, variant_schema);
                         }
@@ -1795,7 +1789,7 @@ impl<'s, W: Write> SchemaAwareWriteSerializer<'s, W> {
                 for (i, variant_schema) in union_schema.schemas.iter().enumerate() {
                     match variant_schema {
                         Schema::Record(inner)
-                            if inner.fields.len() == len && inner.name.name == name =>
+                            if inner.fields.len() == len && inner.name.name() == name =>
                         {
                             encode_int(i as i32, &mut *self.writer)?;
                             return self.serialize_struct_with_schema(name, len, variant_schema);
