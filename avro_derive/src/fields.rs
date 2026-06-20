@@ -21,7 +21,7 @@ use quote::quote;
 use syn::spanned::Spanned;
 use syn::{Expr, Field, Type};
 
-pub fn get_field_schema_expr(field: &Field, with: With) -> Result<TokenStream, Vec<syn::Error>> {
+pub fn get_field_schema_expr(field: &Field, with: &With) -> Result<TokenStream, Vec<syn::Error>> {
     match with {
         With::Trait => Ok(type_to_schema_expr(&field.ty)?),
         With::Serde(path) => {
@@ -47,7 +47,7 @@ pub fn get_field_schema_expr(field: &Field, with: With) -> Result<TokenStream, V
 
 pub fn get_field_get_record_fields_expr(
     field: &Field,
-    with: With,
+    with: &With,
 ) -> Result<TokenStream, Vec<syn::Error>> {
     match with {
         With::Trait => Ok(type_to_get_record_fields_expr(&field.ty)?),
