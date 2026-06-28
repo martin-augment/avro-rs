@@ -41,7 +41,7 @@ use syn::{DeriveInput, parse_macro_input, spanned::Spanned};
 
 use crate::attributes::NamedTypeOptions;
 use crate::implementation::Implementation;
-use crate::utils::{aliases, preserve_optional, to_compile_errors};
+use crate::utils::to_compile_errors;
 
 #[proc_macro_derive(AvroSchema, attributes(avro, serde))]
 // Templated from Serde
@@ -84,3 +84,37 @@ fn derive_avro_schema(input: DeriveInput) -> Result<Implementation, Vec<syn::Err
         )]),
     }
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use quote::quote;
+//     use syn::DeriveInput;
+//     use crate::derive_avro_schema;
+//
+//     #[test]
+//     fn debug() {
+//         let struc = quote! {
+//             #[avro(repr = "record_internally_tagged")]
+//             #[serde(tag = "type")]
+//             enum Foo {
+//                 A {},
+//                 B {
+//                     #[avro(default = r#""spam""#)]
+//                     spam: String,
+//                 },
+//                 #[serde(rename = "D")]
+//                 C {
+//                     #[avro(default = r#""bar""#)]
+//                     bar: String,
+//                     #[serde(rename = "is_it_true", alias = "is_it_false")]
+//                     #[avro(default = "true")]
+//                     other: bool,
+//                 },
+//             }
+//         };
+//         let input = syn::parse2::<DeriveInput>(struc).unwrap();
+//         let stream = derive_avro_schema(input).unwrap().into_token_stream();
+//         println!("{}", stream.to_string());
+//         panic!();
+//     }
+// }
