@@ -24,7 +24,7 @@ use crate::{
     error::Details,
     schema::{DecimalSchema, EnumSchema, FixedSchema, Name, RecordSchema, ResolvedSchema, Schema},
     types::Value,
-    util::{safe_len, zag_i32, zag_i64},
+    util::{safe_collection_len, safe_len, zag_i32, zag_i64},
 };
 use std::{
     borrow::Borrow,
@@ -241,7 +241,19 @@ pub(crate) fn decode_internal<R: Read, S: Borrow<Schema>>(
                     break;
                 }
 
-                items.reserve(len);
+                // Bound the cumulative element count against the allocation
+                // budget before reserving: reserving for `len` elements
+                // allocates at least `len * size_of::<Value>()` bytes, and a
+                // tiny block count could otherwise drive a huge allocation. This
+                // also caps zero-byte on-wire elements (e.g. `null`), which
+                // consume no input. `reserve_exact` requests only what is needed,
+                // rather than the amortized (larger) capacity of `reserve`.
+                let total = items
+                    .len()
+                    .checked_add(len)
+                    .ok_or(Details::IntegerOverflow)?;
+                safe_collection_len(total, std::mem::size_of::<Value>())?;
+                items.reserve_exact(len);
                 for _ in 0..len {
                     items.push(decode_internal(
                         &inner.items,
@@ -263,6 +275,17 @@ pub(crate) fn decode_internal<R: Read, S: Borrow<Schema>>(
                     break;
                 }
 
+                // See the array case above; a map entry additionally carries a
+                // String key, so bound by the size of a `(String, Value)` pair.
+                // This is a lower-bound estimate: `HashMap::reserve` also
+                // allocates hash-table metadata and spare capacity, so the
+                // budget is enforced approximately (not exactly) for maps. There
+                // is no `reserve_exact` for `HashMap`.
+                let total = items
+                    .len()
+                    .checked_add(len)
+                    .ok_or(Details::IntegerOverflow)?;
+                safe_collection_len(total, std::mem::size_of::<(String, Value)>())?;
                 items.reserve(len);
                 for _ in 0..len {
                     match decode_internal(&Schema::String, names, enclosing_namespace, reader)? {
@@ -384,6 +407,94 @@ mod tests {
         let mut input: &[u8] = &[5, 6, 2, 4, 6, 0];
         let result = decode(&Schema::array(Schema::Int).build(), &mut input);
         assert_eq!(Array(vec!(Int(1), Int(2), Int(3))), result?);
+
+        Ok(())
+    }
+
+    // A block count is decoded from a few bytes but drives `items.reserve(len)`,
+    // allocating `len * size_of::<Value>()` bytes. A tiny payload declaring a
+    // huge count must be rejected rather than driving a multi-gigabyte
+    // allocation. Zero-byte elements (null) are the worst case: they consume no
+    // input, so nothing else bounds the count.
+    fn zig_zag(n: i64) -> Vec<u8> {
+        // Reuse the crate's encoder so the tests cannot diverge from it.
+        let mut out = Vec::new();
+        crate::util::zig_i64(n, &mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn test_decode_array_of_null_huge_count_is_rejected() -> TestResult {
+        // 200,000,000 nulls => ~11 GiB reserve, far above the default budget.
+        let mut payload = zig_zag(200_000_000);
+        payload.push(0x00); // end-of-array marker (unreached)
+        let mut input: &[u8] = &payload;
+        let result = decode(&Schema::array(Schema::Null).build(), &mut input);
+        assert!(
+            result.is_err(),
+            "a huge array<null> block count must be rejected, got {result:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_array_of_long_huge_count_is_rejected() -> TestResult {
+        // Non-zero-byte elements are also affected: the reserve happens before
+        // any element is read.
+        let mut payload = zig_zag(200_000_000);
+        payload.push(0x00);
+        let mut input: &[u8] = &payload;
+        let result = decode(&Schema::array(Schema::Long).build(), &mut input);
+        assert!(
+            result.is_err(),
+            "a huge array<long> block count must be rejected, got {result:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_map_huge_count_is_rejected() -> TestResult {
+        let mut payload = zig_zag(200_000_000);
+        payload.push(0x00);
+        let mut input: &[u8] = &payload;
+        let result = decode(&Schema::map(Schema::Long).build(), &mut input);
+        assert!(
+            result.is_err(),
+            "a huge map block count must be rejected, got {result:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_small_array_of_null_still_decodes() -> TestResult {
+        // A modest array of nulls within the budget must still decode.
+        let mut payload = zig_zag(3);
+        payload.push(0x00);
+        let mut input: &[u8] = &payload;
+        let result = decode(&Schema::array(Schema::Null).build(), &mut input)?;
+        assert_eq!(Array(vec!(Value::Null, Value::Null, Value::Null)), result);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_array_int64_min_block_count_is_rejected() -> TestResult {
+        // i64::MIN as a negative block count cannot be negated (checked_neg
+        // returns None); decoding must fail rather than wrap. i64::MIN zig-zag
+        // encodes as the 10-byte varint below, followed by a block byte-size.
+        let payload: &[u8] = &[
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01, // i64::MIN
+            0x00, // block byte-size
+        ];
+        let mut input = payload;
+        let result = decode(&Schema::array(Schema::Int).build(), &mut input);
+        assert!(
+            result.is_err(),
+            "an i64::MIN array block count must be rejected, got {result:?}"
+        );
 
         Ok(())
     }
