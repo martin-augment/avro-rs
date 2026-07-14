@@ -73,8 +73,10 @@ impl MapHelper for Map<String, Value> {
     }
 }
 
-pub(crate) fn read_long<R: Read>(reader: &mut R) -> AvroResult<i64> {
-    zag_i64(reader)
+/// Decode a long from the reader and convert it to a usize.
+pub(crate) fn read_usize<R: Read>(reader: &mut R) -> AvroResult<usize> {
+    let long = zag_i64(reader)?;
+    usize::try_from(long).map_err(|e| Details::ConvertI64ToUsize(e, long).into())
 }
 
 /// Write the number as a zigzagged varint to the writer.
@@ -177,7 +179,30 @@ pub(crate) fn safe_len(len: usize) -> AvroResult<usize> {
         Ok(len)
     } else {
         Err(Details::MemoryAllocation {
-            desired: len,
+            desired: Some(len),
+            maximum: max_bytes,
+        }
+        .into())
+    }
+}
+
+/// Bound the cumulative number of elements a collection (array or map) may hold.
+///
+/// This is equivalent to `safe_len(total_items * size_of::<T>)`
+pub(crate) fn safe_collection_len<T>(total_items: usize) -> AvroResult<()> {
+    let max_bytes = max_allocation_bytes(DEFAULT_MAX_ALLOCATION_BYTES);
+    // Use checked_mul (not saturating_mul): saturating to usize::MAX could pass
+    // the check below when max_bytes is configured to usize::MAX, letting the
+    // subsequent reserve() hit a capacity-overflow panic instead of erroring.
+    let desired = total_items
+        .checked_mul(size_of::<T>())
+        .ok_or(Details::IntegerOverflow)?;
+
+    if desired <= max_bytes {
+        Ok(())
+    } else {
+        Err(Details::MemoryAllocation {
+            desired: Some(desired),
             maximum: max_bytes,
         }
         .into())
