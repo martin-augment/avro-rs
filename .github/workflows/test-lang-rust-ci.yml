@@ -38,7 +38,7 @@ jobs:
   license-check:
     runs-on: ubuntu-24.04
     steps:
-      - uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2.82.9
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: hawkeye@6.3
       - name: Checkout
@@ -64,12 +64,12 @@ jobs:
             target: aarch64-unknown-linux-gnu
 
     steps:
-      - uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2.82.9
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         if: matrix.rust == 'nightly'
         with:
           tool: cargo-expand
 
-      - uses: taiki-e/install-action@4684b8405694ae9dd42c9f39ba901a70ae83f4a3 # v2.82.9
+      - uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         if: matrix.rust == 'stable' && matrix.runner.target == 'x86_64-unknown-linux-gnu'
         with:
           tool: cargo-rdme@1.4.2
@@ -95,11 +95,12 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.runner.name }}-${{ matrix.runner.target }}-${{ matrix.rust }}-cache1-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Rust Toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          toolchain: ${{ matrix.rust }}
-          components: rustfmt
-          targets: ${{ matrix.runner.target }}
+        run: |
+          rustup update ${{ matrix.rust }}
+          rustup toolchain install ${{ matrix.rust }}
+          rustup default ${{ matrix.rust }}
+          rustup component add rustfmt
+          rustup target add ${{ matrix.runner.target }}
 
       # Check if the doc cumment in avro/src/lib.rs and avro/README.md are in sync.
       - name: Run cargo-rdme
@@ -151,9 +152,10 @@ jobs:
           persist-credentials: false
 
       - name: Rust Toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          toolchain: stable
+        run: |
+          rustup update stable
+          rustup toolchain install stable
+          rustup default stable
 
       - name: Cache Cargo
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -179,7 +181,7 @@ jobs:
             ${{ runner.os }}-maven-
 
       - name: "Setup Temurin JDK 8, 11, 17 & 21"
-        uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
         with:
           distribution: "temurin"
           java-version: |
@@ -251,10 +253,11 @@ jobs:
           persist-credentials: false
 
       - name: Rust Toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          toolchain: stable
-          targets: wasm32-unknown-unknown
+        run: |
+          rustup update stable
+          rustup toolchain install stable
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
 
       - name: Cache Cargo
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
