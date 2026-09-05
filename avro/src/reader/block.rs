@@ -27,7 +27,7 @@ use serde_json::from_slice;
 
 use crate::{
     AvroResult, Codec, Error,
-    decode::{decode, decode_internal},
+    decode::{DecodeContext, decode, decode_internal},
     error::Details,
     schema::{Names, Schema, resolve_names, resolve_names_with_schemata},
     serde::deser_schema::{Config, SchemaAwareDeserializer},
@@ -162,7 +162,20 @@ impl<'r, R: Read> Block<'r, R> {
                 // and replace `buf` with the new one, instead of reusing the same buffer.
                 // We can address this by using some "limited read" type to decode directly
                 // into the buffer. But this is fine, for now.
-                self.codec.decompress(&mut self.buf)
+                self.codec.decompress(&mut self.buf)?;
+
+                // The declared object count is attacker-controlled header data
+                // and is not otherwise required to be backed by actual bytes:
+                // with a zero-width writer schema (e.g. "null") every object
+                // decodes without consuming input, so a ~80-byte file could
+                // declare 2^62 objects and make readers spin or OOM on
+                // collect(). A count larger than the decompressed block size
+                // is only possible for such zero-width datums; bound it by
+                // the allocation budget instead of trusting the header.
+                if self.message_count > self.buf.len() {
+                    util::safe_collection_len::<Value>(self.message_count)?;
+                }
+                Ok(())
             }
             Err(Details::ReadVariableIntegerBytes(io_err)) => {
                 if let ErrorKind::UnexpectedEof = io_err.kind() {
@@ -200,6 +213,7 @@ impl<'r, R: Read> Block<'r, R> {
             &self.names_refs,
             None,
             &mut block_bytes,
+            &mut DecodeContext::new(),
         )?;
         let item = match read_schema {
             Some(schema) => item.resolve(schema)?,
@@ -236,6 +250,7 @@ impl<'r, R: Read> Block<'r, R> {
             let config = Config {
                 names: &self.names_refs,
                 human_readable: self.human_readable,
+                recursion_depth: 0,
             };
             T::deserialize(SchemaAwareDeserializer::new(
                 &mut block_bytes,
@@ -317,7 +332,10 @@ fn read_codec(metadata: &HashMap<String, Value>) -> AvroResult<Codec> {
                         if let Some(Value::Bytes(bytes)) =
                             metadata.get("avro.codec.compression_level")
                         {
-                            Ok(Codec::Bzip2(Bzip2Settings::new(bytes[0])))
+                            match bytes.first() {
+                                Some(&level) => Ok(Codec::Bzip2(Bzip2Settings::new(level))),
+                                None => Err(Details::BadCodecMetadata.into()),
+                            }
                         } else {
                             Ok(codec)
                         }
@@ -328,7 +346,10 @@ fn read_codec(metadata: &HashMap<String, Value>) -> AvroResult<Codec> {
                         if let Some(Value::Bytes(bytes)) =
                             metadata.get("avro.codec.compression_level")
                         {
-                            Ok(Codec::Xz(XzSettings::new(bytes[0])))
+                            match bytes.first() {
+                                Some(&level) => Ok(Codec::Xz(XzSettings::new(level))),
+                                None => Err(Details::BadCodecMetadata.into()),
+                            }
                         } else {
                             Ok(codec)
                         }
@@ -339,7 +360,10 @@ fn read_codec(metadata: &HashMap<String, Value>) -> AvroResult<Codec> {
                         if let Some(Value::Bytes(bytes)) =
                             metadata.get("avro.codec.compression_level")
                         {
-                            Ok(Codec::Zstandard(ZstandardSettings::new(bytes[0])))
+                            match bytes.first() {
+                                Some(&level) => Ok(Codec::Zstandard(ZstandardSettings::new(level))),
+                                None => Err(Details::BadCodecMetadata.into()),
+                            }
                         } else {
                             Ok(codec)
                         }
@@ -359,6 +383,140 @@ mod tests {
     use super::Block;
     use crate::error::Details;
     use crate::{Codec, Schema};
+    use apache_avro_test_helper::TestResult;
+
+    #[cfg(any(feature = "bzip", feature = "xz", feature = "zstandard"))]
+    fn empty_compression_level_errors_for(codec_name: &str) {
+        use crate::types::Value;
+        use std::collections::HashMap;
+
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "avro.codec".to_string(),
+            Value::Bytes(codec_name.as_bytes().to_vec()),
+        );
+        metadata.insert(
+            "avro.codec.compression_level".to_string(),
+            Value::Bytes(vec![]),
+        );
+
+        // An empty compression_level in attacker-controlled metadata must be
+        // a clean error, not an index-out-of-bounds panic.
+        let err = super::read_codec(&metadata).unwrap_err().into_details();
+        assert!(matches!(err, Details::BadCodecMetadata), "{err:?}");
+    }
+
+    #[cfg(feature = "bzip")]
+    #[test]
+    fn avro_rs_644_empty_bzip2_compression_level_is_rejected() {
+        empty_compression_level_errors_for("bzip2");
+    }
+
+    #[cfg(feature = "xz")]
+    #[test]
+    fn avro_rs_644_empty_xz_compression_level_is_rejected() {
+        empty_compression_level_errors_for("xz");
+    }
+
+    #[cfg(feature = "zstandard")]
+    #[test]
+    fn avro_rs_644_empty_zstandard_compression_level_is_rejected() {
+        empty_compression_level_errors_for("zstandard");
+    }
+
+    #[test]
+    fn avro_rs_643_huge_message_count_on_empty_block_is_rejected() -> TestResult {
+        // Block header claiming 2^62 objects with a block size of 0: with a
+        // zero-width writer schema (e.g. "null") each object decodes without
+        // consuming input, so the declared count must be bounded by the
+        // allocation budget instead of being trusted.
+        let mut data = Vec::new();
+        crate::util::zig_i64(1i64 << 62, &mut data)?;
+        data.push(0x00); // block size 0
+        data.extend([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]); // sync marker
+
+        let mut block = Block::<'_, &[u8]> {
+            reader: &data[..],
+            buf: vec![],
+            buf_idx: 0,
+            message_count: 0,
+            marker: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            codec: Codec::Null,
+            writer_schema: Schema::Null,
+            schemata: vec![],
+            user_metadata: Default::default(),
+            names_refs: Default::default(),
+            human_readable: false,
+        };
+
+        let err = block.read_block_next().unwrap_err().into_details();
+        // 2^62 * size_of::<Value>() overflows usize, so this trips the
+        // checked_mul overflow arm inside safe_collection_len.
+        assert!(matches!(err, Details::IntegerOverflow), "{err:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn avro_rs_643_over_budget_message_count_on_empty_block_is_rejected() -> TestResult {
+        // A count that multiplies cleanly by size_of::<Value>() but exceeds
+        // the allocation budget must trip the budget check itself, pinning
+        // the MemoryAllocation path alongside the overflow one above.
+        let budget = crate::util::DEFAULT_MAX_ALLOCATION_BYTES;
+        let count = budget / size_of::<crate::types::Value>() + 1;
+
+        let mut data = Vec::new();
+        crate::util::zig_i64(count as i64, &mut data)?;
+        data.push(0x00); // block size 0
+        data.extend([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]); // sync marker
+
+        let mut block = Block::<'_, &[u8]> {
+            reader: &data[..],
+            buf: vec![],
+            buf_idx: 0,
+            message_count: 0,
+            marker: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            codec: Codec::Null,
+            writer_schema: Schema::Null,
+            schemata: vec![],
+            user_metadata: Default::default(),
+            names_refs: Default::default(),
+            human_readable: false,
+        };
+
+        let err = block.read_block_next().unwrap_err().into_details();
+        assert!(matches!(err, Details::MemoryAllocation { .. }), "{err:?}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn avro_rs_643_small_message_count_on_empty_block_is_accepted() -> TestResult {
+        // The crate's own writer produces count > 0 with an empty block body
+        // for zero-width datums (e.g. schema "null"); those must keep working.
+        let null_values_count = 3;
+        let mut data = Vec::new();
+        crate::util::zig_i64(null_values_count, &mut data)?;
+        data.push(0x00); // block size 0
+        data.extend([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]); // sync marker
+
+        let mut block = Block::<'_, &[u8]> {
+            reader: &data[..],
+            buf: vec![],
+            buf_idx: 0,
+            message_count: 0,
+            marker: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            codec: Codec::Null,
+            writer_schema: Schema::Null,
+            schemata: vec![],
+            user_metadata: Default::default(),
+            names_refs: Default::default(),
+            human_readable: false,
+        };
+
+        block.read_block_next()?;
+        assert_eq!(block.message_count, null_values_count as usize);
+        Ok(())
+    }
 
     #[test]
     fn avro_rs_586_negative_block_size() {
