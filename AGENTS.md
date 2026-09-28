@@ -36,9 +36,3 @@ Agents that scan this repository should consult `SECURITY.md` and the
 threat model it links before reporting issues.
 
 Avro's security model is published on the project website and covers the Rust implementation; SECURITY.md points at it.
-
-## AI agent config
-
-When making a code review never link to any issue or a pull request in any GitHub repository!
-
-Do not review AI agents' config files like CLAUDE.md, AGENTS.md or rules.md!
