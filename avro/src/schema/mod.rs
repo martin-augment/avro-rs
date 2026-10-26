@@ -1130,6 +1130,7 @@ fn pcf_map(schema: &Map<String, JsonValue>, defined_names: &mut HashSet<String>)
             || k == "doc"
             || k == "aliases"
             || k == "logicalType"
+            || k == "order"
         {
             continue;
         }
@@ -1788,7 +1789,7 @@ mod tests {
                         "name": "EmployeeId",
                         "size": 16
                       },
-                      "default": "female"
+                      "default": "0123456789abcdef"
                     }
                   ]
                 },
@@ -2202,6 +2203,32 @@ mod tests {
         assert_eq!(
             "92f2ccef718c6754",
             format!("{}", schema.fingerprint::<Rabin>())
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_canonical_form_strips_field_order() -> TestResult {
+        // Test vector 026 from the specification's share/test/data/schema-tests.txt
+        let schema = Schema::parse_str(
+            r#"{
+                "fields": [
+                    {"type": "boolean", "aliases": [], "name": "f1", "default": true},
+                    {"order": "descending", "name": "f2", "doc": "Hello", "type": "int"}
+                ],
+                "type": "record",
+                "name": "foo"
+            }"#,
+        )?;
+        assert_eq!(
+            schema.canonical_form(),
+            r#"{"name":"foo","type":"record","fields":[{"name":"f1","type":"boolean"},{"name":"f2","type":"int"}]}"#
+        );
+        // -4860222112080293046 in schema-tests.txt, as little-endian bytes
+        assert_eq!(
+            format!("{}", schema.fingerprint::<Rabin>()),
+            "4a93f457bd058dbc"
         );
 
         Ok(())
@@ -2975,7 +3002,7 @@ mod tests {
         };
 
         let avro_value = crate::to_value(foo)?;
-        assert!(avro_value.validate(&schema));
+        avro_value.validate(&schema)?;
 
         let mut writer = crate::Writer::new(&schema, Vec::new())?;
 
@@ -3065,10 +3092,7 @@ mod tests {
             bar_use: Bar::Bar1,
         };
         let avro_value = crate::to_value(foo)?;
-        assert!(
-            avro_value.validate(&writer_schema),
-            "value is valid for schema",
-        );
+        avro_value.validate(&writer_schema)?;
         let datum = GenericDatumWriter::builder(&writer_schema)
             .build()?
             .write_value_to_vec(avro_value)?;
@@ -3651,10 +3675,7 @@ mod tests {
         // Serialize using the writer schema.
         let writer_schema = Schema::parse(writer_schema)?;
         let avro_value = crate::to_value(s)?;
-        assert!(
-            avro_value.validate(&writer_schema),
-            "value is valid for schema",
-        );
+        avro_value.validate(&writer_schema)?;
         let datum = GenericDatumWriter::builder(&writer_schema)
             .build()?
             .write_value_to_vec(avro_value)?;
@@ -3668,7 +3689,7 @@ mod tests {
             .reader_schema(&reader_schema)
             .build()?
             .read_value(&mut x)?;
-        assert!(deser_value.validate(&reader_schema));
+        deser_value.validate(&reader_schema)?;
 
         // Verify that we can read a field from the record.
         let d: MyRecordReader = crate::from_value(&deser_value)?;
