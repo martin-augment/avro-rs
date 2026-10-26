@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::{AvroResult, Error, error::Details};
+use bigdecimal::BigDecimal;
 use num_bigint::{BigInt, Sign};
 use serde::{Deserialize, Serialize, Serializer, de::SeqAccess};
 use std::num::NonZero;
@@ -92,6 +93,11 @@ impl Decimal {
 
     pub(crate) fn len(&self) -> usize {
         self.len.get()
+    }
+
+    /// The number of decimal digits of the unscaled value.
+    pub(crate) fn digits(&self) -> u64 {
+        BigDecimal::from_bigint(self.value.clone(), 0).digits()
     }
 
     pub(crate) fn to_vec(&self) -> AvroResult<Vec<u8>> {
